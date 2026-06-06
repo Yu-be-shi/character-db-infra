@@ -1,0 +1,45 @@
+# ローカル・CI 用: DB 単体起動 + マイグレーション
+#
+# 前提: 以下のレイアウトでリポジトリが配置されていること
+#   character-system/
+#   ├── character-db/      (DBスキーマ・マイグレーション)
+#   └── character-db-infra/ (このリポジトリ)
+#
+# 起動: docker compose up -d
+# API はこのスタックの character-db-net に外部接続する
+
+services:
+  character-db:
+    build:
+      context: ../character-db
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_DB: ${CHAR_DB_NAME:-characters}
+      POSTGRES_USER: ${CHAR_DB_USER:-app}
+      POSTGRES_PASSWORD: ${CHAR_DB_PASSWORD:-devpassword}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CHAR_DB_USER:-app} -d ${CHAR_DB_NAME:-characters}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - character-db-net
+
+  character-db-migrate:
+    build:
+      context: ../character-db
+      dockerfile: Dockerfile.migrate
+    command:
+      - "--url=postgres://${CHAR_DB_USER:-app}:${CHAR_DB_PASSWORD:-devpassword}@character-db:5432/${CHAR_DB_NAME:-characters}?sslmode=disable"
+    depends_on:
+      character-db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - character-db-net
+
+networks:
+  character-db-net:
+    name: character-db-net

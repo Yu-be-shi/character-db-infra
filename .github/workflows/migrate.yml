@@ -1,0 +1,207 @@
+name: Database Migration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+  pull_request:
+    paths:
+      - 'terraform/**'
+
+  # マイグレーション本番適用は手動トリガーで実行（誤適用防止）
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_WORKING_DIR: terraform/environments/prod
+
+jobs:
+  # ─── PR: マイグレーション構文・整合性チェック ──────────────────────────
+  validate-migration:
+    name: Validate migration SQL
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: characters_test
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: testpassword
+        options: >-
+          --health-cmd "pg_isready -U app -d characters_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/character-db
+          path: db
+
+      - name: Validate atlas.sum integrity
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/db/migrations:/migrations \
+            arigaio/atlas:latest \
+            migrate validate --dir "file:///migrations"
+
+      - name: Apply migrations (up) against test DB
+        run: |
+          docker run --rm --network host \
+            -v ${{ github.workspace }}/db/migrations:/migrations \
+            arigaio/atlas:latest \
+            migrate apply \
+            --dir "file:///migrations" \
+            --url "postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable"
+
+  # ─── Terraform plan（PR時） ────────────────────────────────────────────
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform plan -var-file=prod.tfvars -no-color
+        env:
+          TF_VAR_vpc_id: ${{ secrets.TF_VAR_VPC_ID }}
+          TF_VAR_private_subnet_ids: ${{ secrets.TF_VAR_PRIVATE_SUBNET_IDS }}
+          TF_VAR_api_security_group_ids: ${{ secrets.TF_VAR_API_SG_IDS }}
+
+  # ─── Terraform apply（main マージ後） ──────────────────────────────────
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -var-file=prod.tfvars -auto-approve
+        env:
+          TF_VAR_vpc_id: ${{ secrets.TF_VAR_VPC_ID }}
+          TF_VAR_private_subnet_ids: ${{ secrets.TF_VAR_PRIVATE_SUBNET_IDS }}
+          TF_VAR_api_security_group_ids: ${{ secrets.TF_VAR_API_SG_IDS }}
+
+  # ─── マイグレーションイメージをビルド & ECR プッシュ ───────────────────
+  build-and-push-migrate:
+    name: Build & push migration image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: terraform-apply
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/character-db
+          path: db
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push migration image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: character-db-migrate
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -f db/Dockerfile.migrate db/
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+  # ─── 本番マイグレーション実行（手動トリガー） ───────────────────────────
+  run-migration:
+    name: Run migration on production RDS
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # terraform output から SG ID とサブネットを動的取得（ハードコード不要）
+      - name: Get infra outputs from Terraform state
+        id: tf-output
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform init -reconfigure
+          echo "migration_sg=$(terraform output -raw migrate_security_group_id)" >> $GITHUB_OUTPUT
+          echo "private_subnets=$(terraform output -json private_subnet_ids | jq -r 'join(",")')" >> $GITHUB_OUTPUT
+        env:
+          TF_VAR_vpc_id: ${{ secrets.TF_VAR_VPC_ID }}
+          TF_VAR_private_subnet_ids: ${{ secrets.TF_VAR_PRIVATE_SUBNET_IDS }}
+          TF_VAR_api_security_group_ids: ${{ secrets.TF_VAR_API_SG_IDS }}
+
+      - name: Run Atlas migrate apply via ECS task
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ vars.ECS_CLUSTER }} \
+            --task-definition character-db-migrate \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.tf-output.outputs.private_subnets }}],securityGroups=[${{ steps.tf-output.outputs.migration_sg }}],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "Migration task ARN: $TASK_ARN"
+          aws ecs wait tasks-stopped \
+            --cluster ${{ vars.ECS_CLUSTER }} --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ vars.ECS_CLUSTER }} --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+
+          [ "$EXIT_CODE" = "0" ] || exit 1
