@@ -48,14 +48,21 @@ jobs:
             arigaio/atlas:latest \
             migrate validate --dir "file:///migrations"
 
-      - name: Apply migrations (up) against test DB
+      # 安全リンタ（squawk・無料）。破壊的変更・ロック等を検出。除外ルールは db/squawk.toml。
+      - name: Lint migration SQL (squawk)
         run: |
-          docker run --rm --network host \
-            -v ${{ github.workspace }}/db/migrations:/migrations \
-            arigaio/atlas:latest \
-            migrate apply \
-            --dir "file:///migrations" \
-            --url "postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable"
+          docker run --rm -v ${{ github.workspace }}/db:/work -w /work node:20-slim \
+            sh -c "npx --yes squawk-cli@latest -c squawk.toml migrations/*.sql views/*.sql"
+
+      # 本番と同じ migrate イメージ（atlas apply → psql で views 適用）をビルドして
+      # テスト DB に適用し、テーブルとビューの両方が問題なく流れることを検証する。
+      - name: Build migration image
+        run: docker build -f db/Dockerfile.migrate -t cdb-migrate db/
+
+      - name: Apply migrations + views against test DB
+        run: |
+          docker run --rm --network host cdb-migrate \
+            "--url=postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable"
 
   # ─── Terraform plan（PR時） ────────────────────────────────────────────
   terraform-plan:
