@@ -24,6 +24,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    volumes:
+      - character-db-data:/var/lib/postgresql/data
     networks:
       - character-db-net
 
@@ -39,6 +41,9 @@ services:
     restart: "no"
     networks:
       - character-db-net
+
+volumes:
+  character-db-data:
 
 networks:
   character-db-net:
