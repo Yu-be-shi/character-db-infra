@@ -1,0 +1,35 @@
+# STG（自宅サーバー）への DB スタックデプロイ。
+#
+# 前提（自宅サーバーの一度きりセットアップ）:
+#   1. $STG_ROOT（既定 ~/character-system）配下に全リポジトリを clone 済みであること
+#      （character-db / character-db-infra / apis/* / applications/* が sibling に並ぶ）。
+#   2. その WSL に GitHub Actions の self-hosted runner を **ラベル `character-stg`** で常駐。
+#   3. .env 等のローカル設定は配置済み。
+#   runner がオフラインのときはジョブが queue され、online 復帰時に消化される（気まぐれ起動でOK）。
+name: Deploy STG (home)
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: stg-db
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, character-stg]
+    steps:
+      - name: Pull & up (PostgreSQL + migrate)
+        env:
+          STG_ROOT: ${{ vars.STG_ROOT }}
+        run: |
+          set -euo pipefail
+          ROOT="${STG_ROOT:-$HOME/character-system}"
+          # スキーマの正である character-db と、DB インフラの両方を最新化する。
+          git -C "$ROOT/character-db" fetch origin develop && git -C "$ROOT/character-db" reset --hard origin/develop
+          git -C "$ROOT/character-db-infra" fetch origin develop && git -C "$ROOT/character-db-infra" reset --hard origin/develop
+          cd "$ROOT/character-db-infra"
+          # PostgreSQL 起動 + character-db-migrate（atlas→views→seeds）を再適用。
+          docker compose up -d --build

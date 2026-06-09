@@ -13,6 +13,7 @@ module "rds" {
   vpc_id                     = var.vpc_id
   private_subnet_ids         = var.private_subnet_ids
   allowed_security_group_ids = var.api_security_group_ids
+  ephemeral                  = var.ephemeral
 
   tags = local.tags
 }
