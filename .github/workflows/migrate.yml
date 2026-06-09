@@ -52,14 +52,14 @@ jobs:
       - name: Lint migration SQL (squawk)
         run: |
           docker run --rm -v ${{ github.workspace }}/db:/work -w /work node:20-slim \
-            sh -c "npx --yes squawk-cli@latest -c squawk.toml migrations/*.sql views/*.sql"
+            sh -c "npx --yes squawk-cli@latest -c squawk.toml migrations/*.sql views/*.sql seeds/*.sql"
 
-      # 本番と同じ migrate イメージ（atlas apply → psql で views 適用）をビルドして
-      # テスト DB に適用し、テーブルとビューの両方が問題なく流れることを検証する。
+      # 本番と同じ migrate イメージ（atlas apply → psql で views 適用 → psql で seeds 適用）を
+      # ビルドしてテスト DB に適用し、テーブル・ビュー・初期データがすべて問題なく流れることを検証する。
       - name: Build migration image
         run: docker build -f db/Dockerfile.migrate -t cdb-migrate db/
 
-      - name: Apply migrations + views against test DB
+      - name: Apply migrations + views + seeds against test DB
         run: |
           docker run --rm --network host cdb-migrate \
             "--url=postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable"
