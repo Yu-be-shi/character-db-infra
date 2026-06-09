@@ -18,3 +18,9 @@ variable "api_security_group_ids" {
   description = "DB アクセスを許可する API のセキュリティグループ ID（api-infra の outputs から取得）"
   type        = list(string)
 }
+
+variable "ephemeral" {
+  description = "使い捨て(up/down)環境か。true で destroy 容易な設定（削除保護無効・final snapshot 無し）"
+  type        = bool
+  default     = true
+}

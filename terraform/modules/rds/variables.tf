@@ -42,6 +42,12 @@ variable "allowed_security_group_ids" {
   type        = list(string)
 }
 
+variable "ephemeral" {
+  description = "使い捨て(up/down)環境か。true なら deletion_protection 無効・final snapshot 無し・backup 無しで destroy を妨げない"
+  type        = bool
+  default     = false
+}
+
 variable "tags" {
   description = "全リソースに付与するタグ"
   type        = map(string)
