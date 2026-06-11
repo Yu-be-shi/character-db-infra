@@ -26,6 +26,9 @@ jobs:
           POSTGRES_DB: characters_test
           POSTGRES_USER: app
           POSTGRES_PASSWORD: testpassword
+        # --network host のコンテナから localhost:5432 で到達できるよう公開する
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U app -d characters_test"
           --health-interval 5s
@@ -33,10 +36,14 @@ jobs:
           --health-retries 10
 
     steps:
+      # private リポジトリの cross-checkout にはデフォルト GITHUB_TOKEN では権限が
+      # 足りないため PAT を使う（prod-switch.yml と同じ方式）。
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/character-db
           path: db
+          ref: main
+          token: ${{ secrets.GH_PAT }}
 
       - name: Validate atlas.sum integrity
         run: |
@@ -85,9 +92,11 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init
 
+      # 変数はすべて TF_VAR_* で渡す（prod.tfvars は gitignore されており
+      # リポジトリに存在しないため -var-file は使えない）。
       - name: Terraform Plan
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform plan -var-file=prod.tfvars -no-color
+        run: terraform plan -no-color
         env:
           TF_VAR_vpc_id: ${{ secrets.TF_VAR_VPC_ID }}
           TF_VAR_private_subnet_ids: ${{ secrets.TF_VAR_PRIVATE_SUBNET_IDS }}

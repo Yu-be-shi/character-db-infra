@@ -17,8 +17,10 @@ services:
       POSTGRES_DB: ${CHAR_DB_NAME:-characters}
       POSTGRES_USER: ${CHAR_DB_USER:-app}
       POSTGRES_PASSWORD: ${CHAR_DB_PASSWORD:-devpassword}
+    # デバッグ用のホスト公開はループバックに限定する（STG の自宅サーバー等で
+    # LAN/外部にポートを晒さない。コンテナ間は character-db-net 経由で到達する）。
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${CHAR_DB_USER:-app} -d ${CHAR_DB_NAME:-characters}"]
       interval: 5s

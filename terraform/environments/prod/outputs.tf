@@ -17,3 +17,8 @@ output "migrate_ecr_repository_url" {
   description = "マイグレーションイメージの ECR リポジトリ URL（CI の push 先）"
   value       = module.migrate.ecr_repository_url
 }
+
+output "private_subnet_ids" {
+  description = "マイグレーション ECS タスクを起動するサブネット（CI の run-task が参照）"
+  value       = var.private_subnet_ids
+}
