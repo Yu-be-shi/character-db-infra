@@ -10,8 +10,12 @@ terraform {
 # ── ECR ───────────────────────────────────────────────────────────────────────
 
 resource "aws_ecr_repository" "migrate" {
-  name                 = var.name
-  image_tag_mutability = "MUTABLE"
+  name = var.name
+  # SHA タグ運用のため IMMUTABLE（api 側 ECR と揃える）。CI は push 前にタグ存在を確認する。
+  image_tag_mutability = "IMMUTABLE"
+  # ephemeral（daily up/down）ではイメージが残っていても destroy を通す。
+  # これが無いと up 後の down が RepositoryNotEmptyException で失敗する。
+  force_delete = var.ephemeral
 
   image_scanning_configuration {
     scan_on_push = true

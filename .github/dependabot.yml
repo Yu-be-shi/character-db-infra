@@ -1,7 +1,9 @@
 version: 2
 updates:
   - package-ecosystem: terraform
-    directory: "/terraform/environments/prod"
+    directories:
+      - "/terraform/environments/prod"
+      - "/terraform/modules/*"
     schedule:
       interval: weekly
   - package-ecosystem: github-actions

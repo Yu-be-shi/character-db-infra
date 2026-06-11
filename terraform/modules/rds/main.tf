@@ -52,20 +52,17 @@ resource "aws_security_group" "rds" {
   description = "Allow PostgreSQL access from API"
   vpc_id      = var.vpc_id
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # egress は定義しない: SG はステートフルで、許可した ingress への応答は自動で
+  # 通る。RDS 自身から外向きに張る接続は無いため、全開放 egress は不要。
 
   tags = var.tags
 }
 
 # inline ingress ではなく独立ルールで定義する。
 # allowed_security_group_ids が空（初回 up：API SG がまだ無い段階）でも
-# 「ソース無し ingress」にならず apply が成立し、migrate 用ルール
-# （aws_security_group_rule.rds_allow_migrate）と方式も揃う。
+# 「ソース無し ingress」にならず apply が成立する。
+# ※ migrate 用ルール（aws_security_group_rule.rds_allow_migrate）は旧方式
+#   （aws_security_group_rule）のまま。動作に問題は無いが方式は揃っていない。
 resource "aws_vpc_security_group_ingress_rule" "rds_from_api" {
   for_each = toset(var.allowed_security_group_ids)
 

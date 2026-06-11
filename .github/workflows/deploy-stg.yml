@@ -11,6 +11,11 @@ name: Deploy STG (home)
 on:
   push:
     branches: [develop]
+  # スキーマの正（character-db）の develop 更新通知でも再デプロイする
+  # （送信側は character-db の notify-consumers.yml。Variables の CONSUMER_REPOS に
+  #  このリポジトリを含めること）。
+  repository_dispatch:
+    types: [character-db-updated]
   workflow_dispatch:
 
 concurrency:
@@ -31,5 +36,8 @@ jobs:
           git -C "$ROOT/character-db" fetch origin develop && git -C "$ROOT/character-db" reset --hard origin/develop
           git -C "$ROOT/character-db-infra" fetch origin develop && git -C "$ROOT/character-db-infra" reset --hard origin/develop
           cd "$ROOT/character-db-infra"
-          # PostgreSQL 起動 + character-db-migrate（atlas→views→seeds）を再適用。
-          docker compose up -d --build
+          # PostgreSQL を起動し、マイグレーションは run で分離実行する。
+          # `up -d` は one-shot サービス（character-db-migrate）の終了コードを
+          # 伝播しないため、失敗してもジョブが緑になってしまう。
+          docker compose up -d --build character-db
+          docker compose run --rm --build character-db-migrate

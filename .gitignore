@@ -4,5 +4,6 @@
 *.tfstate.backup
 *.tfvars
 !*.tfvars.example
-.terraform.lock.hcl
+# .terraform.lock.hcl はコミットする（provider バージョンの漂流を防ぐ。HashiCorp 推奨）
+# https://developer.hashicorp.com/terraform/language/files/dependency-lock
 crash.log

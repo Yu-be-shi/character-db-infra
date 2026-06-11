@@ -37,3 +37,9 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "ephemeral" {
+  description = "使い捨て運用（daily up/down）。ECR の force_delete に連動する"
+  type        = bool
+  default     = false
+}
