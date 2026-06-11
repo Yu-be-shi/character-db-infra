@@ -24,3 +24,9 @@ variable "ephemeral" {
   type        = bool
   default     = true
 }
+
+variable "image_tag" {
+  description = "マイグレーションイメージのタグ。CI（prod-switch）は commit SHA を push するため、TF_VAR_image_tag で同じ SHA を渡すこと（既定の latest は CI では存在しない）"
+  type        = string
+  default     = "latest"
+}

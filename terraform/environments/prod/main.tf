@@ -21,11 +21,13 @@ module "rds" {
 module "migrate" {
   source = "../../modules/migrate"
 
+  ephemeral             = var.ephemeral
   aws_region            = var.aws_region
   vpc_id                = var.vpc_id
   private_subnet_ids    = var.private_subnet_ids
   db_secret_arn         = module.rds.secret_arn
   rds_security_group_id = module.rds.security_group_id
+  image_tag             = var.image_tag
 
   tags = local.tags
 }

@@ -26,6 +26,9 @@ jobs:
           POSTGRES_DB: characters_test
           POSTGRES_USER: app
           POSTGRES_PASSWORD: testpassword
+        # --network host のコンテナから localhost:5432 で到達できるよう公開する
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U app -d characters_test"
           --health-interval 5s
@@ -33,23 +36,27 @@ jobs:
           --health-retries 10
 
     steps:
+      # private リポジトリの cross-checkout にはデフォルト GITHUB_TOKEN では権限が
+      # 足りないため PAT を使う（prod-switch.yml と同じ方式）。
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/character-db
           path: db
+          ref: main
+          token: ${{ secrets.GH_PAT }}
 
       - name: Validate atlas.sum integrity
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/db/migrations:/migrations \
-            arigaio/atlas:latest \
+            arigaio/atlas:1.2.2 \
             migrate validate --dir "file:///migrations"
 
       # 安全リンタ（squawk・無料）。破壊的変更・ロック等を検出。除外ルールは db/squawk.toml。
       - name: Lint migration SQL (squawk)
         run: |
           docker run --rm -v ${{ github.workspace }}/db:/work -w /work node:20-slim \
-            sh -c "npx --yes squawk-cli@latest -c squawk.toml migrations/*.sql views/*.sql seeds/*.sql"
+            sh -c "npx --yes squawk-cli@2.57.0 -c squawk.toml migrations/*.sql views/*.sql seeds/*.sql"
 
       # 本番と同じ migrate イメージ（atlas apply → psql で views 適用 → psql で seeds 適用）を
       # ビルドしてテスト DB に適用し、テーブル・ビュー・初期データがすべて問題なく流れることを検証する。
@@ -66,28 +73,32 @@ jobs:
     name: Terraform Plan
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # AWS 認証は OIDC（短命トークン）。長期アクセスキーは使わない。
+    # https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
     permissions:
       contents: read
-      pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # backend.tf は bucket を持たない部分設定のため、init 時に必ず注入する。
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init
+        run: terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
 
+      # 変数はすべて TF_VAR_* で渡す（prod.tfvars は gitignore されており
+      # リポジトリに存在しないため -var-file は使えない）。
       - name: Terraform Plan
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform plan -var-file=prod.tfvars -no-color
+        run: terraform plan -no-color
         env:
           TF_VAR_vpc_id: ${{ secrets.TF_VAR_VPC_ID }}
           TF_VAR_private_subnet_ids: ${{ secrets.TF_VAR_PRIVATE_SUBNET_IDS }}
@@ -100,16 +111,18 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       # terraform output から SG ID とサブネットを動的取得（ハードコード不要）
@@ -117,7 +130,7 @@ jobs:
         id: tf-output
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          terraform init -reconfigure
+          terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
           echo "migration_sg=$(terraform output -raw migrate_security_group_id)" >> $GITHUB_OUTPUT
           echo "private_subnets=$(terraform output -json private_subnet_ids | jq -r 'join(",")')" >> $GITHUB_OUTPUT
         env:
@@ -125,11 +138,50 @@ jobs:
           TF_VAR_private_subnet_ids: ${{ secrets.TF_VAR_PRIVATE_SUBNET_IDS }}
           TF_VAR_api_security_group_ids: ${{ secrets.TF_VAR_API_SG_IDS }}
 
+      # 既存タスク定義のイメージは「前回 up 時点」のもの。スキーマ再適用の目的は
+      # 新しいマイグレーションの反映なので、character-db@main を build → push し、
+      # タスク定義が参照するタグ（latest ではなく SHA）を上書き登録してから実行する。
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/character-db
+          path: db
+          ref: main
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Build & push latest migrate image
+        id: image
+        run: |
+          set -euo pipefail
+          REG="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REG"
+          DB_SHA=$(git -C db rev-parse HEAD)
+          IMAGE="$REG/character-db-migrate:$DB_SHA"
+          if ! aws ecr describe-images --repository-name character-db-migrate --image-ids imageTag="$DB_SHA" >/dev/null 2>&1; then
+            docker build -f db/Dockerfile.migrate -t "$IMAGE" db/
+            docker push "$IMAGE"
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Register task definition with new image
+        id: taskdef
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition --task-definition character-db-migrate \
+            --query 'taskDefinition' > td.json
+          jq --arg img "${{ steps.image.outputs.image }}" \
+            '.containerDefinitions[0].image = $img
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            td.json > td-new.json
+          NEW_ARN=$(aws ecs register-task-definition --cli-input-json file://td-new.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$NEW_ARN" >> "$GITHUB_OUTPUT"
+
       - name: Run Atlas migrate apply via ECS task
         run: |
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ vars.ECS_CLUSTER }} \
-            --task-definition character-db-migrate \
+            --task-definition "${{ steps.taskdef.outputs.arn }}" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[${{ steps.tf-output.outputs.private_subnets }}],securityGroups=[${{ steps.tf-output.outputs.migration_sg }}],assignPublicIp=DISABLED}" \
             --query 'tasks[0].taskArn' --output text)

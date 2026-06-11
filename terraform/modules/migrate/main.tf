@@ -10,8 +10,12 @@ terraform {
 # ── ECR ───────────────────────────────────────────────────────────────────────
 
 resource "aws_ecr_repository" "migrate" {
-  name                 = var.name
-  image_tag_mutability = "MUTABLE"
+  name = var.name
+  # SHA タグ運用のため IMMUTABLE（api 側 ECR と揃える）。CI は push 前にタグ存在を確認する。
+  image_tag_mutability = "IMMUTABLE"
+  # ephemeral（daily up/down）ではイメージが残っていても destroy を通す。
+  # これが無いと up 後の down が RepositoryNotEmptyException で失敗する。
+  force_delete = var.ephemeral
 
   image_scanning_configuration {
     scan_on_push = true
@@ -107,14 +111,15 @@ resource "aws_ecs_task_definition" "migrate" {
     name  = "migrate"
     image = "${aws_ecr_repository.migrate.repository_url}:${var.image_tag}"
 
-    # atlas migrate apply --dir file:///migrations --url <DB_DSN>
-    # ENTRYPOINT は Dockerfile.migrate に設定済み。--url だけ渡す。
-    command = [
-      "--url=$(DB_DSN)"
-    ]
+    # ENTRYPOINT は Dockerfile.migrate に設定済み（migrate-entrypoint.sh）。
+    # ECS の exec 形式 command はシェルを介さず $(VAR) を展開しないため、
+    # 接続先は command 引数ではなく環境変数 DB_DSN で渡し、entrypoint 側が
+    # フォールバックとして読む。atlas は URL 形式しか受け付けないため
+    # secret の url キー（postgres://...）を使う。
+    command = []
 
     secrets = [
-      { name = "DB_DSN", valueFrom = "${var.db_secret_arn}:dsn::" }
+      { name = "DB_DSN", valueFrom = "${var.db_secret_arn}:url::" }
     ]
 
     logConfiguration = {
