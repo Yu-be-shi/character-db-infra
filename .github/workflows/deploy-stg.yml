@@ -8,9 +8,12 @@
 #   runner がオフラインのときはジョブが queue され、online 復帰時に消化される（気まぐれ起動でOK）。
 name: Deploy STG (home)
 
+# STG は `staging` ブランチの鏡。develop マージでは STG を触らない（自宅 runner が基本
+# オフラインのため develop 連動だとジョブが溜まるだけ）。staging へ promote するか手動
+# （workflow_dispatch）でデプロイする。
 on:
   push:
-    branches: [develop]
+    branches: [staging]
   workflow_dispatch:
 
 concurrency:
@@ -27,9 +30,9 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="${STG_ROOT:-$HOME/character-system}"
-          # スキーマの正である character-db と、DB インフラの両方を最新化する。
-          git -C "$ROOT/character-db" fetch origin develop && git -C "$ROOT/character-db" reset --hard origin/develop
-          git -C "$ROOT/character-db-infra" fetch origin develop && git -C "$ROOT/character-db-infra" reset --hard origin/develop
+          # スキーマの正である character-db と、DB インフラの両方を staging に最新化する。
+          git -C "$ROOT/character-db" fetch origin staging && git -C "$ROOT/character-db" reset --hard origin/staging
+          git -C "$ROOT/character-db-infra" fetch origin staging && git -C "$ROOT/character-db-infra" reset --hard origin/staging
           cd "$ROOT/character-db-infra"
           # PostgreSQL 起動 + character-db-migrate（atlas→views→seeds）を再適用。
           docker compose up -d --build
